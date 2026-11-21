@@ -17,7 +17,7 @@ class FakeProc:
     def wait(self, t=None): return 0
 
 
-def make(dead=False, adapter_after=0, fail_cmd=None):
+def make(dead=False, adapter_after=0, fail_cmd=None, flaky=0):
     d = tempfile.mkdtemp()
     open(os.path.join(d, "tun2socks.exe"), "w").close()
     calls, popen_calls = [], []
@@ -25,11 +25,14 @@ def make(dead=False, adapter_after=0, fail_cmd=None):
 
     def run(cmd, timeout=20):
         calls.append(cmd)
-        if "show" in cmd and "interface" in cmd:
+        if cmd[0] == "powershell":  # adapter existence check: empty output until it really exists
             state["n"] += 1
-            return (0, "") if state["n"] > adapter_after else (1, "not found")
+            return (0, "SocksTether\r\n") if state["n"] > adapter_after else (0, "")
         if fail_cmd and fail_cmd in cmd:
             return 1, "boom"
+        if flaky and "address" in " ".join(cmd) and "set" in cmd and state.setdefault("addr_fails", 0) < flaky:
+            state["addr_fails"] += 1
+            return 1, "The filename, directory name, or volume label syntax is incorrect."
         return 0, ""
 
     proc = FakeProc(dead)
@@ -87,6 +90,21 @@ class TunnelTests(unittest.TestCase):
         self.assertTrue(proc.terminated)
         self.assertTrue(any("delete route" in " ".join(c) for c in calls))
         t.stop()  # idempotent
+
+    def test_waits_for_adapter_even_if_netsh_would_say_ok(self):
+        t, calls, pcalls, proc = make(adapter_after=5)
+        t.start("192.168.49.1", 1080, "tether", "pw12345678", "Wi-Fi")
+        checks = [i for i, c in enumerate(calls) if c[0] == "powershell"]
+        first_cfg = next(i for i, c in enumerate(calls) if c[0] == "netsh")
+        self.assertEqual(len(checks), 6)           # kept polling until the adapter was really there
+        self.assertLess(checks[-1], first_cfg)     # and only then configured it
+
+    def test_retries_when_adapter_not_ready_for_config(self):
+        t, calls, pcalls, proc = make(flaky=3)
+        t.start("192.168.49.1", 1080, "tether", "pw12345678", "Wi-Fi")
+        sets = [c for c in calls if "set" in c and "address" in " ".join(c) and "static" not in c]
+        self.assertGreaterEqual(len(sets), 4)      # 3 failures then success
+        self.assertFalse(proc.terminated)
 
     def test_missing_binary(self):
         t = tunnel.Tunnel(bin_dir=tempfile.mkdtemp())

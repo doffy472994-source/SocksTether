@@ -120,12 +120,14 @@ class Tunnel:
                 pass  # best effort; stop() still cleans up on a normal exit
 
         try:
-            for _ in range(40):  # up to ~20 s for the adapter to appear
+            ps = f"(Get-NetAdapter -Name '{TUN_NAME}' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)"
+            for _ in range(60):  # up to ~30 s for the adapter to really exist
                 if self.proc.poll() is not None:
                     raise TunnelError("The tunnel program stopped right away: " + (self._read_log().strip() or
                                       "no details (is the app running as administrator?)"))
-                rc, _out = self._run(["netsh", "interface", "ipv4", "show", "interface", f"name={TUN_NAME}"])
-                if rc == 0:
+                # netsh can exit 0 even when the interface doesn't exist, so ask PowerShell and check the output
+                _rc, out = self._run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps])
+                if out.strip() == TUN_NAME:
                     break
                 self._sleep(0.5)
             else:
@@ -140,9 +142,15 @@ class Tunnel:
                 (True, ["netsh", "interface", "ipv4", "add", "route", "0.0.0.0/0", TUN_NAME, TUN_IP, "metric=1"]),
             ]
             for must, cmd in steps:
-                rc, out = self._run(cmd)
-                if rc != 0 and must:
-                    raise TunnelError(f"Network setup failed: {out.strip()}")
+                # a brand-new adapter can take a moment before Windows accepts configuration: retry
+                for attempt in range(10):
+                    rc, out = self._run(cmd)
+                    if rc == 0:
+                        break
+                    self._sleep(1.0)
+                else:
+                    if must:
+                        raise TunnelError(f"Network setup failed: {out.strip()}")
         except BaseException:
             self.stop()
             raise
