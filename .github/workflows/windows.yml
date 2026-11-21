@@ -1,7 +1,11 @@
 name: Build Windows app
 on:
   push:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -21,3 +25,16 @@ jobs:
         with:
           name: SocksTether-windows
           path: windows/dist/SocksTether.exe
+      - name: Publish exe to the builds-windows branch
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          cp windows/dist/SocksTether.exe /tmp/SocksTether.exe
+          git config user.name github-actions
+          git config user.email actions@users.noreply.github.com
+          git checkout --orphan builds-windows
+          git rm -rf . -q
+          cp /tmp/SocksTether.exe .
+          git add SocksTether.exe
+          git commit -qm "exe from ${GITHUB_SHA}"
+          git push -f origin builds-windows
