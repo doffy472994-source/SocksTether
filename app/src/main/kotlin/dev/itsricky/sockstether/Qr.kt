@@ -6,7 +6,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 
 object Qr {
-    private fun esc(s: String) = s.replace("\\", "\\\\").replace(";", "\;").replace(",", "\\,").replace(":", "\\:").replace("\"", "\\\"")
+    private fun esc(s: String) = s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace(":", "\\:").replace("\"", "\\\"")
 
     /** Standard Wi-Fi join QR: scanning it with a phone camera connects to the hotspot. */
     fun wifi(ssid: String, password: String, size: Int = 512): Bitmap {
