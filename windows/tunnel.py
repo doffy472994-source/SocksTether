@@ -8,6 +8,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
+import diag
 import wifi
 
 TUN_NAME = "SocksTether"
@@ -98,9 +99,12 @@ class Tunnel:
         if not os.path.exists(exe):
             raise TunnelError("tun2socks.exe is missing from the app.")
         self._secret = password
+        diag.add_secret(password)
         fd, self._log_path = tempfile.mkstemp(prefix="sockstether-", suffix=".log")
         log = os.fdopen(fd, "w")
         kw = {"creationflags": subprocess.CREATE_NO_WINDOW} if _WIN else {}
+        kw["stdin"] = subprocess.DEVNULL
+        diag.log("starting tun2socks: " + " ".join(tun2socks_args(exe, gateway, port, user, password, iface)))
         try:
             self.proc = self._popen(tun2socks_args(exe, gateway, port, user, password, iface),
                                     cwd=self.bin_dir, stdout=log, stderr=log, **kw)

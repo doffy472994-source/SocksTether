@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from xml.sax.saxutils import escape
 
+import diag
+
 SSID_PREFIX = "DIRECT-ST-"
 _WIN = sys.platform == "win32"
 
@@ -59,14 +61,23 @@ def profile_xml(ssid, password):
 
 
 def _run(args, timeout=20):
-    kw = {}
+    """Run a command (list, or a string when exact quoting matters). Never raises: returns (returncode, output).
+    stdin must be DEVNULL: in a windowed (no-console) app an inherited stdin makes subprocess fail with
+    'The handle is invalid'."""
+    kw = {"stdin": subprocess.DEVNULL}
     if _WIN:
         kw["creationflags"] = subprocess.CREATE_NO_WINDOW
         kw["encoding"] = "oem"
     else:
         kw["encoding"] = "utf-8"
-    p = subprocess.run(args, capture_output=True, text=True, errors="replace", timeout=timeout, **kw)
-    return p.returncode, (p.stdout or "") + (p.stderr or "")
+    shown = args if isinstance(args, str) else " ".join(args)
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, errors="replace", timeout=timeout, **kw)
+        rc, out = p.returncode, (p.stdout or "") + (p.stderr or "")
+    except (OSError, subprocess.SubprocessError) as e:
+        rc, out = 1, f"{type(e).__name__}: {e}"
+    diag.log(f"$ {shown}\n  -> rc={rc} {out.strip()[:600]}")
+    return rc, out
 
 
 def _request_scan():
@@ -104,26 +115,31 @@ def scan():
 
 def connect(ssid, password):
     """Create a profile for the network and ask Windows to join it."""
+    if '"' in ssid:
+        raise RuntimeError("This network name contains a quote character, which isn't supported.")
+    diag.add_secret(password)
     fd, path = tempfile.mkstemp(suffix=".xml")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(profile_xml(ssid, password))
-        rc, out = _run(["netsh", "wlan", "add", "profile", f"filename={path}", "user=current"])
+        # exact quoting matters to netsh: the quotes go around the value only, not around filename=...
+        rc, out = _run(f'netsh wlan add profile filename="{path}" user=current')
         if rc != 0:
-            raise RuntimeError(f"Couldn't save the Wi-Fi profile: {out.strip()}")
+            raise RuntimeError(f"Windows refused the Wi-Fi profile: {out.strip()}")
     finally:
         try:
             os.remove(path)  # it contains the password in plain text
         except OSError:
             pass
-    rc, out = _run(["netsh", "wlan", "connect", f"name={ssid}", f"ssid={ssid}"])
+    rc, out = _run(f'netsh wlan connect name="{ssid}" ssid="{ssid}"')
     if rc != 0:
         raise RuntimeError(f"Windows couldn't start the connection: {out.strip()}")
 
 
 def disconnect(ssid):
     _run(["netsh", "wlan", "disconnect"])
-    _run(["netsh", "wlan", "delete", "profile", f"name={ssid}"])
+    if '"' not in ssid:
+        _run(f'netsh wlan delete profile name="{ssid}"')
 
 
 def ip_config_for(ssid):

@@ -42,4 +42,8 @@ Bundled third-party binaries (downloaded at build time, version-pinned and SHA-2
 IPv6 isn't tunnelled: if your PC has its own IPv6 internet, IPv6-only traffic would bypass the phone.
 
 Build: push to GitHub (the *Build Windows app* workflow publishes `SocksTether.exe` to the `builds-windows` branch).
-Tests: `python -m unittest test_core test_tunnel -v` inside `windows/`.
+Tests: `python -m unittest test_core test_tunnel test_vault -v` inside `windows/`.
+
+Windows app extras: Wi-Fi passwords are remembered per network after a successful connection (encrypted with your
+Windows account via DPAPI; "Forget saved password" removes one). Errors show as popups and every step is logged to
+`%APPDATA%\SocksTether\log.txt` (passwords redacted); the "Open log" button opens it.
