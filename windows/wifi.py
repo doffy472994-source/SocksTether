@@ -126,15 +126,28 @@ def disconnect(ssid):
     _run(["netsh", "wlan", "delete", "profile", f"name={ssid}"])
 
 
-def gateway_for(ssid):
-    """IPv4 default gateway of the adapter connected to this network, or None. Locale-independent."""
+def ip_config_for(ssid):
+    """(adapter alias, IPv4 default gateway) of the adapter joined to this network, or (None, None).
+    Locale-independent: asks PowerShell for objects, not localized text."""
     if not re.fullmatch(r"[A-Za-z0-9_-]+", ssid):
-        return None
-    ps = ("(Get-NetIPConfiguration | Where-Object { $_.NetProfile.Name -like '" + ssid + "*' "
-          "-and $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4DefaultGateway.NextHop")
+        return None, None
+    ps = ("$c = Get-NetIPConfiguration | Where-Object { $_.NetProfile.Name -like '" + ssid + "*' "
+          "-and $_.IPv4DefaultGateway } | Select-Object -First 1; "
+          "if ($c) { $c.InterfaceAlias; $c.IPv4DefaultGateway.NextHop }")
     _, out = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], timeout=25)
-    m = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b", out)
-    return m.group(1) if m else None
+    lines = [l.strip() for l in out.splitlines() if l.strip()]
+    if len(lines) < 2:
+        return None, None
+    m = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b", lines[-1])
+    return (lines[0], m.group(1)) if m else (None, None)
+
+
+def gateway_for(ssid):
+    return ip_config_for(ssid)[1]
+
+
+def interface_alias_for(ssid):
+    return ip_config_for(ssid)[0]
 
 
 def wait_for_gateway(ssid, timeout=30, should_stop=lambda: False):

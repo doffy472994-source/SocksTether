@@ -16,6 +16,7 @@ from tkinter import ttk, simpledialog
 
 import socksbridge
 import sysproxy
+import tunnel
 import wifi
 
 SOCKS_USER = "tether"
@@ -27,19 +28,20 @@ class UserError(Exception):
     pass
 
 
-def load_port():
+def load_config():
     try:
         with open(CONFIG_PATH) as f:
-            return int(json.load(f).get("port", DEFAULT_PORT))
+            d = json.load(f)
+        return {"port": int(d.get("port", DEFAULT_PORT)), "all_apps": bool(d.get("all_apps", True))}
     except (OSError, ValueError, TypeError):
-        return DEFAULT_PORT
+        return {"port": DEFAULT_PORT, "all_apps": True}
 
 
-def save_port(port):
+def save_config(port, all_apps):
     try:
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         with open(CONFIG_PATH, "w") as f:
-            json.dump({"port": port}, f)
+            json.dump({"port": port, "all_apps": all_apps}, f)
     except OSError:
         pass
 
@@ -49,6 +51,9 @@ class App:
         self.root = root
         self.q = queue.Queue()
         self.proxy = sysproxy.SystemProxy()
+        self.tunnel = None
+        self.password = None
+        cfg = load_config()
         if self.proxy.has_pending_backup():  # a previous run crashed while the proxy was on
             self.proxy.restore()
         atexit.register(self._safety_restore)
@@ -81,13 +86,21 @@ class App:
         row = ttk.Frame(frm)
         row.pack(fill="x", pady=(10, 0))
         ttk.Label(row, text="Proxy port").pack(side="left")
-        self.port_var = tk.StringVar(value=str(load_port()))
+        self.port_var = tk.StringVar(value=str(cfg["port"]))
         self.port_entry = ttk.Entry(row, textvariable=self.port_var, width=7)
         self.port_entry.pack(side="left", padx=6)
         self.refresh_btn = ttk.Button(row, text="Refresh", command=self.scan_now.set)
         self.refresh_btn.pack(side="right")
         self.connect_btn = ttk.Button(row, text="Connect", command=self.on_connect)
         self.connect_btn.pack(side="right", padx=6)
+
+        self.all_apps_var = tk.BooleanVar(value=cfg["all_apps"])
+        self.mode_chk = ttk.Checkbutton(
+            frm, variable=self.all_apps_var,
+            text="All apps incl. Roblox and games (needs administrator)")
+        self.mode_chk.pack(anchor="w", pady=(8, 0))
+        ttk.Label(frm, text="Off = browsers and apps that follow the Windows proxy only.",
+                  foreground="#666").pack(anchor="w")
 
         self.status = tk.Label(frm, text="Looking for networks…", anchor="w", justify="left", wraplength=380)
         self.status.pack(fill="x", pady=(12, 0))
@@ -114,14 +127,16 @@ class App:
             self.set_status("Select your network and press Connect." if nets else
                             "No SocksTether networks found. Is it running on the phone?")
 
-    def _set_connected(self, ssid, gw, port, bridge):
+    def _set_connected(self, ssid, gw, port, bridge, mode):
         self.ssid, self.bridge, self.busy = ssid, bridge, False
+        self.mode_chk.config(state="disabled")
         self.connect_btn.config(text="Disconnect", state="normal")
         self.tree.config(selectmode="none")
         self.port_entry.config(state="disabled")
-        self.set_status(f"Connected to {ssid}\nProxy {gw}:{port} · Windows proxy is on.", "#0a7a2f")
+        what = "All apps are routed through the phone." if mode == "tunnel" else "Windows proxy is on (browsers/most apps)."
+        self.set_status(f"Connected to {ssid}\nProxy {gw}:{port}. {what}", "#0a7a2f")
         self.watch_stop.clear()
-        threading.Thread(target=self._watchdog, args=(gw, port, bridge.proxy[3]), daemon=True).start()
+        threading.Thread(target=self._watchdog, args=(gw, port, self.password), daemon=True).start()
 
     def _set_disconnected(self, message=None, color="#222"):
         self.ssid = self.bridge = None
@@ -129,6 +144,7 @@ class App:
         self.connect_btn.config(text="Connect", state="normal")
         self.tree.config(selectmode="browse")
         self.port_entry.config(state="normal")
+        self.mode_chk.config(state="normal")
         self.set_status(message or "Disconnected. Your original proxy settings are back.", color)
         self.scan_now.set()
 
@@ -175,11 +191,16 @@ class App:
         pw = simpledialog.askstring("Wi-Fi password", f"Password for {ssid}", show="*", parent=self.root)
         if not pw:
             return
-        save_port(port)
+        all_apps = self.all_apps_var.get()
+        if all_apps and not tunnel.is_admin():
+            self.set_status("All-apps mode needs administrator rights. Close this and run SocksTether as administrator "
+                            "(right-click → Run as administrator), or untick the box.", "#b00020")
+            return
+        save_config(port, all_apps)
         self.busy = True
         self.connect_btn.config(state="disabled")
         self.set_status("Joining the network…")
-        threading.Thread(target=self._connect_worker, args=(ssid, pw, port), daemon=True).start()
+        threading.Thread(target=self._connect_worker, args=(ssid, pw, port, all_apps), daemon=True).start()
 
     def disconnect(self, message=None, color="#222"):
         self.busy = True
@@ -196,7 +217,10 @@ class App:
 
     def _teardown(self, ssid, bridge):
         try:
-            self.proxy.restore()  # first, so the PC never keeps pointing at a dead proxy
+            if self.tunnel:  # first: removes the virtual adapter and its routes, so normal internet returns
+                self.tunnel.stop()
+                self.tunnel = None
+            self.proxy.restore()  # and never keep pointing at a dead proxy
         finally:
             if bridge:
                 bridge.stop()
@@ -231,7 +255,7 @@ class App:
             self.scan_now.wait(6)
             self.scan_now.clear()
 
-    def _connect_worker(self, ssid, pw, port):
+    def _connect_worker(self, ssid, pw, port, all_apps):
         bridge = None
         try:
             wifi.connect(ssid, pw)
@@ -246,10 +270,23 @@ class App:
                 raise UserError("The phone rejected the login. In SocksTether, turn on 'Own Wi-Fi Direct network' and use the same password.")
             except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError, socksbridge.SocksError):
                 raise UserError(f"Joined the network, but nothing answered at {gw}:{port}. Is the proxy running, and is the port right?")
-            bridge = socksbridge.Bridge(gw, port, SOCKS_USER, pw)
-            local_port = bridge.start()
-            self.proxy.enable(local_port)
-            self.q.put(("connected", ssid, gw, port, bridge))
+            self.password = pw
+            if all_apps:
+                alias = wifi.interface_alias_for(ssid)
+                if not alias:
+                    raise UserError("Couldn't find the Wi-Fi adapter for this network.")
+                self.q.put(("status", "Starting the network tunnel for all apps…", "#222"))
+                self.tunnel = tunnel.Tunnel()
+                try:
+                    self.tunnel.start(gw, port, SOCKS_USER, pw, alias)
+                except tunnel.TunnelError as e:
+                    raise UserError(str(e))
+                self.q.put(("connected", ssid, gw, port, None, "tunnel"))
+            else:
+                bridge = socksbridge.Bridge(gw, port, SOCKS_USER, pw)
+                local_port = bridge.start()
+                self.proxy.enable(local_port)
+                self.q.put(("connected", ssid, gw, port, bridge, "proxy"))
         except UserError as e:
             self._abort(ssid, bridge, str(e))
         except Exception as e:  # unexpected: still leave the PC in a clean state

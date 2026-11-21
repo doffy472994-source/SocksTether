@@ -26,11 +26,20 @@ remote DNS. Only private/LAN client addresses are accepted.
 the *Build APK* workflow. `./gradlew :socks-core:test` runs the SOCKS5 server tests on the JVM.
 
 ## Windows app (`windows/`)
-Pick the phone's `DIRECT-ST-…` network from the list, enter its password, done. The app joins the network,
-logs in to the phone's proxy (user `tether` + the same Wi-Fi password), starts a local bridge and switches
-the Windows system proxy to it. Disconnect, closing the app, or losing the phone puts your original proxy
-settings back (a backup is kept on disk, so even a crash is repaired next launch).
+Pick the phone's `DIRECT-ST-…` network from the list, enter its password, done. The app joins the network and
+logs in to the phone's proxy (user `tether` + the same Wi-Fi password).
 
-- Needs the phone's **Own Wi-Fi Direct network** switch on (it makes the proxy login automatic). Default port 1080; change it in the app if you changed it on the phone.
-- Windows' system proxy is HTTP-only, so apps that ignore the system proxy (some games/launchers/CLI tools) aren't covered. Browsers, Windows Update, Store, most desktop apps are.
-- Build: push to GitHub, download `SocksTether.exe` from the *Build Windows app* workflow. Or run `python app.py` (Python 3.10+, no dependencies). Tests: `python -m unittest test_core -v` inside `windows/`.
+Two modes (tick box in the app):
+- **All apps (default, needs administrator):** creates a virtual network adapter (Wintun) and uses tun2socks to send
+  *everything* (TCP and UDP, so Roblox and other games) through the phone's SOCKS5 proxy. UDP goes through
+  SOCKS5 UDP ASSOCIATE, which the phone app supports. DNS is set to 1.1.1.1 / 8.8.8.8 on the adapter.
+- **Browsers only:** sets the Windows proxy via a local HTTP→SOCKS5 bridge; no admin, but apps that ignore the
+  system proxy (Roblox, games, many launchers) aren't covered.
+
+Disconnecting, closing the app, losing the phone, or even crashing puts everything back (the tunnel process is
+tied to the app by a Windows job object; the system-proxy backup is repaired on next launch).
+Bundled third-party binaries (downloaded at build time, version-pinned and SHA-256 checked in CI): tun2socks v2.6.0 (MIT), Wintun 0.14.1.
+IPv6 isn't tunnelled: if your PC has its own IPv6 internet, IPv6-only traffic would bypass the phone.
+
+Build: push to GitHub (the *Build Windows app* workflow publishes `SocksTether.exe` to the `builds-windows` branch).
+Tests: `python -m unittest test_core test_tunnel -v` inside `windows/`.

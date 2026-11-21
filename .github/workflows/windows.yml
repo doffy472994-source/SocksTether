@@ -15,11 +15,27 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Core tests
-        run: python -m unittest test_core -v
+        run: python -m unittest test_core test_tunnel -v
         working-directory: windows
         continue-on-error: true
+      - name: Fetch tun2socks and Wintun (pinned versions, SHA-256 checked)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force windows/bin | Out-Null
+          Invoke-WebRequest "https://github.com/xjasonlyu/tun2socks/releases/download/v2.6.0/tun2socks-windows-amd64.zip" -OutFile t2s.zip
+          $h = (Get-FileHash t2s.zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "tun2socks sha256: $h"
+          if ($h -ne "1429e2e3b1ea09052da2c65e5005538b5730d63da37e304f4ad6fd2698a66695") { throw "tun2socks hash mismatch" }
+          Expand-Archive t2s.zip -DestinationPath t2s
+          Copy-Item (Get-ChildItem t2s -Filter *.exe | Select-Object -First 1).FullName windows/bin/tun2socks.exe
+          Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile wintun.zip
+          $w = (Get-FileHash wintun.zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "wintun sha256: $w"
+          if ($w -ne "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51") { throw "wintun hash mismatch" }
+          Expand-Archive wintun.zip -DestinationPath wt
+          Copy-Item wt/wintun/bin/amd64/wintun.dll windows/bin/wintun.dll
       - run: pip install pyinstaller
-      - run: pyinstaller --onefile --windowed --name SocksTether app.py
+      - run: pyinstaller --onefile --windowed --uac-admin --name SocksTether --add-binary "bin/tun2socks.exe;." --add-binary "bin/wintun.dll;." app.py
         working-directory: windows
       - uses: actions/upload-artifact@v4
         with:
